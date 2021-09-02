@@ -1,0 +1,209 @@
+---
+title: "Chinook Business Questions"
+author: "Chaitra Rao"
+date: "8/22/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Introduction and Set-up
+
+Chinook is a data model that represents a digital media store including tables for albums, artists, invoices, customers, employees, genre and tracks. 
+In this analysis we look into how business decisions can be made through the use of R and SQL for statistical insight. 
+
+
+Import libraries required to establish SQLite database engine and connect to the database within R.
+
+```{r}
+library(RSQLite)
+library(DBI)
+```
+Import the database
+
+```{r}
+db <- 'chinook.db'
+```
+Create function to connect to the database, run a query and disconnect.
+We will repeatedly use this function to run all the queries written in R.
+
+```{r}
+run_query <- function(q){
+  conn <- dbConnect(SQLite(), db)
+  result <- dbGetQuery(conn, q)
+  dbDisconnect(conn)
+  return(result)
+}
+```
+Create function to define query string that lists all tables and views in database and use run_query() to execute the same.
+
+```{r echo = TRUE}
+show_tables <- function(){
+  q <- 'SELECT
+    name,
+    type
+FROM sqlite_master
+WHERE type IN ("table","view");'
+  
+  return(run_query(q))
+}
+
+show_tables()
+```
+### Analysing New Albums to Purchase
+
+The Chinook records store has to pick 3 albums out of 4 options as a deal with a new record label. 
+In order to pick the albums of the most popular genre, we write a query to see what genres have sold the most tracks in USA.
+
+```{r echo=TRUE, warning=FALSE}
+q <- 'WITH usa_tracks AS (
+      SELECT il.*
+      FROM customer c
+      INNER JOIN invoice i ON i.customer_id = c.customer_id
+      INNER JOIN invoice_line il ON il.invoice_id = il.invoice_id
+      WHERE c.country = "USA"
+      )
+
+      SELECT g.name as Genre,
+        COUNT(t.track_id) as "Tracks Sold",
+        CAST(COUNT(t.track_id) AS FLOAT)/(SELECT COUNT(*) from usa_tracks) as "Percent Sold"
+      FROM usa_tracks u
+      INNER JOIN track t ON t.track_id = u.track_id
+      INNER JOIN genre g ON g.genre_id = t.genre_id
+      GROUP BY g.genre_id
+      ORDER BY "Tracks Sold" DESC
+      LIMIT 10'
+genre_tracks <- run_query(q)
+print(genre_tracks)
+```
+
+```{r echo=TRUE}
+library(ggplot2)
+ggplot(data = genre_tracks, aes(x = reorder(Genre, -`Percent Sold`), y = `Percent Sold`)) + geom_col() + theme(axis.text.x = element_text(angle = 30)) + labs(x = "Genre", title = "Most Popular Music Genre in USA", subtitle = "Per the % of tracks sold, 10 of the most popular music genres are chosen for comparision")
+```
+
+We see that out of hip-hop, punk, pop and blues, the 3 most popular are is punk, blues and pop.
+Thus, the recommendation is to purchase -
+1. Red Tone (Punk)
+2. Slim Jim Bites (Blues)
+3. Meteor and the Girls (Pop)
+
+### Analysing Employee Sales Performance
+Next, let us take a look at the total sales assigned to each sales support agent in the company.
+```{r echo=TRUE}
+q <- "SELECT e.first_name || ' '|| e.last_name AS 'Employee Name',
+        SUM(i.total) AS 'Total Sales($)',
+        e.hire_date as 'Hire Date'
+      FROM customer c
+      INNER JOIN employee e ON e.employee_id = c.support_rep_id
+      INNER JOIN invoice i ON i.customer_id = c.customer_id
+      GROUP BY e.employee_id
+      ORDER BY 2 DESC"
+
+sales_rep <- run_query(q)
+print(sales_rep)
+```
+
+```{r}
+ggplot(data = sales_rep, aes(x = `Employee Name`, y = `Total Sales($)`)) + geom_col() + labs(title = "Analysis of Employee Sales Performance", subtitle = "By gathering data of total amount spent by customers associated with each sales support agent\n")
+
+```
+
+Jane Peacock has the highest amount of sales but it is important to note that she is also been an employee at Chinook for the longest time.
+
+
+### Country-wise analysis
+
+Let us look at sales data of different customers, grouping by country. 
+```{r}
+
+
+q <- "
+      WITH country_prelim AS(
+        SELECT c.country    AS Country_Name,
+              COUNT(distinct c.customer_id)   AS 'Customers',
+              SUM(il.unit_price)    AS 'Total Sales($)',
+              ROUND(SUM(il.unit_price) / COUNT(distinct c.customer_id),2)    AS 'Avg. Sales Per Customer',
+              ROUND(SUM(il.unit_price) / COUNT(distinct i.invoice_id),2)   AS 'Avg. Order Value',
+              CASE
+                WHEN COUNT(distinct c.customer_id) < 2 THEN 'Other'
+                ELSE Country
+              END as Country
+        FROM invoice_line il
+          INNER JOIN invoice i ON i.invoice_id = il.invoice_id
+          INNER JOIN customer c ON c.customer_id = i.customer_id
+        GROUP BY 1
+        ORDER BY 1)
+
+      SELECT
+        Country,
+        SUM(Customers) AS Customers,
+        SUM(`Total Sales($)`) AS 'Total Sales($)',
+        SUM(`Avg. Sales Per Customer`) AS 'Avg. Sales Per Customer',
+        SUM(`Avg. Order Value`) AS 'Avg. Order Value'
+      FROM (
+            SELECT *,
+              CASE
+                WHEN Country = 'Other' THEN 1
+                ELSE 0
+              END AS sort
+            FROM country_prelim
+      )
+      GROUP BY Country
+      ORDER BY sort ASC, `Total Sales($)` DESC
+      "
+  
+  
+country_sales <- run_query(q)
+print(country_sales)
+
+```
+```{r}
+library(tidyverse)
+
+country_sales %>% filter(Country != "Other") %>% ggplot(aes(x = Country, y = Customers, fill = Country)) + geom_col() + theme(axis.text.x = element_text(angle = 30)) + labs(title = "Country-wise Distribution of Customers", subtitle = "All countries that have more than 1 customer are included in this analysis.\n")
+
+```
+
+```{r}
+country_sales %>% filter(Country != "Other") %>% ggplot(aes(x = Country, y = `Total Sales($)`, fill = Country)) + geom_col() + theme(axis.text.x = element_text(angle = 30)) + labs(title = "Country-wise Sales Analysis", subtitle = "All countries that have more than 1 customer are included in this analysis.\n")
+
+```
+
+```{r}
+country_sales %>% filter(Country != "Other") %>% ggplot(aes(x = Country, y = `Avg. Sales Per Customer`, fill = Country)) + geom_col() + theme(axis.text.x = element_text(angle = 30)) + labs(title = "Average Sales Per Customer by Country", subtitle = "All countries that have more than 1 customer are included in this analysis.\n")
+
+```
+
+Based on the analysis, we can see that USA is the country with the most number of customers and has the highest total sales value. It is interesting to note that the average value per order is the highest in Czech Republic.
+
+```{r}
+q <- "SELECT c.country    AS Country_Name,
+              COUNT(distinct c.customer_id)   AS 'Customers',
+              SUM(il.unit_price)    AS 'Total Sales($)',
+              ROUND(SUM(il.unit_price) / COUNT(distinct c.customer_id),2)    AS 'Avg. Sales Per Customer',
+              ROUND(SUM(il.unit_price) / COUNT(distinct i.invoice_id),2)   AS 'Avg. Order Value'
+              
+        FROM invoice_line il
+          INNER JOIN invoice i ON i.invoice_id = il.invoice_id
+          INNER JOIN customer c ON c.customer_id = i.customer_id
+          WHERE c.country in ('USA', 'Czech Republic')
+        GROUP BY 1
+        ORDER BY 1"
+
+compare <- run_query(q)
+print(compare)
+```
+We can see a clear comparison above highlighting the high values for average sales per customer and average order value in Czech Republic being higher. 
+It might be a good idea for marketing team to consider Czech Republic as a country with potential for growth.
+
+
+
+
+
+
+
+
+
